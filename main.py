@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from datetime import datetime
 from snmp_engine import ZNetSatutEngineAsync
 from db_manager import init_db, save_to_db
@@ -104,6 +105,8 @@ async def main():
         db_conn.close()
 
 if __name__ == "__main__":
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
