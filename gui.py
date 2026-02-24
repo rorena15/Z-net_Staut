@@ -320,11 +320,19 @@ class ZNetSatutGUI(QMainWindow):
             delta = res.get('delta')
             key = f"{res['ip']}_{info['name']}"
 
+            # [수정] 메트릭 성격에 따라 그래프용 데이터 선택
+            # Traffic 카테고리는 변화량(delta)을, 그 외(Security 등)는 현재 값(res['value'])을 사용
+            try:
+                graph_val = int(res['value']) if info['category'] == "Security" else delta
+            except (ValueError, TypeError):
+                graph_val = None
+
             # 히스토리 데이터 축적
-            if isinstance(delta, int):
+            if isinstance(graph_val, int):
                 if key not in self.history_data: self.history_data[key] = []
-                self.history_data[key].append((current_ts, delta))
-                if len(self.history_data[key]) > self.max_history: self.history_data[key].pop(0)
+                self.history_data[key].append((current_ts, graph_val))
+                if len(self.history_data[key]) > self.max_history: 
+                    self.history_data[key].pop(0)
 
             # [보안 분석 로직] 안내 메시지 형식 통일
             intel_text, intel_color = "[NORMAL]", QColor("#50fa7b")
