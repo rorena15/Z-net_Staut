@@ -21,7 +21,9 @@ class ChaosMibInstrum(instrum.MibInstrumController):
             sim_val = get_simulated_value(oid_str, self.start_time)
             print(f"[*] GET Request: {oid_str} -> {sim_val}")
             
-            if "1.3.6.1.2.1.2.2.1" in oid_str:
+            if "1.3.6.1.2.1.1.1.0" in oid_str:
+                new_vars.append((oid, rfc1902.OctetString("Z-Net_Satut Virtual Agent v1.0")))
+            elif "1.3.6.1.2.1.2.2.1" in oid_str:
                 new_vars.append((oid, rfc1902.Counter32(int(sim_val))))
             else:
                 new_vars.append((oid, rfc1902.Integer(int(sim_val))))
@@ -49,7 +51,10 @@ async def start_agent():
         udp.UdpAsyncioTransport().open_server_mode(('127.0.0.1', 1161))
     )
     
+    # [교정] add_v2c_user 줄을 삭제했습니다. 
+    # add_v1_system이 v1과 v2c(Community-based) 보안을 모두 담당합니다.
     config.add_v1_system(snmp_engine, 'my-area', 'public')
+    
     snmp_context = context.SnmpContext(snmp_engine)
     
     mib_builder = builder.MibBuilder()

@@ -1,20 +1,21 @@
-# chaos_simulator.py
+# simulator/chaos_simulator.py 수정
 import time
-import random
 
-# 테스트 시나리오 정의
 def get_simulated_value(oid, start_time):
     elapsed = int(time.time() - start_time)
     oid_str = str(oid)
     
-    # [매칭 강화] 앞뒤 점(.) 유무와 상관없이 '1.6.9.0'이 포함되면 TCP Sessions로 간주
+    # 1. TCP Sessions (OID에 1.6.9.0이 포함되면 무조건 매칭)
     if "1.6.9.0" in oid_str:
-        # 5초 뒤부터 100씩 폭증 (임계치 50 즉시 돌파)
-        return 10 + (elapsed * 10) if elapsed > 5 else 10
+        # 실행 즉시 임계치(50)를 넘도록 100부터 시작하여 폭증 시뮬레이션
+        return 100 + (elapsed * 20)
     
+    # 2. Traffic (10번 수신, 16번 송신)
     if "1.2.2.1.10" in oid_str or "1.2.2.1.16" in oid_str:
-        return elapsed * 2000000 
+        return 2000000 + (elapsed * 500000)
         
-    return 10 # 매칭 실패 시 고정값 (Delta 0 확인용)
-# 실제 에이전트를 띄우는 대신, Z-Net_Satut이 읽을 수 있는 
-# "가짜 데이터 주입용 인터페이스" 역할을 하는 코드입니다.
+    # 3. SysDescr 등 기본값
+    if "1.3.6.1.2.1.1.1.0" in oid_str:
+        return 0 # 문자열 응답은 시뮬레이터에서 처리
+        
+    return 10 # 기본값

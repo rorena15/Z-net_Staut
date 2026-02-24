@@ -23,34 +23,40 @@ COLOR_OK = "\033[92m"
 def display_realtime_status(scan_time, results):
     os.system('cls' if os.name == 'nt' else 'clear')
     print(f"\n[ Z-Net_Satut SecOps Monitor ] - {scan_time}")
-    print("=" * 115)
-    print(f"{'Target IP':<18} | {'Metric Name':<28} | {'Category':<12} | {'Value':<18} | {'Delta':<8} | {'Security Intelligence'}")
-    print("-" * 115)
+    print("=" * 135)
+    # Header에 Status 컬럼 추가
+    print(f"{'Target IP':<18} | {'Metric Name':<25} | {'Category':<12} | {'Value':<18} | {'Delta':<8} | {'Status':<10} | {'Security Intelligence'}")
+    print("-" * 135)
     
     for res in results:
         info = get_oid_info(res['oid'])
         val_str = str(res['value'])[:18]
         delta = res.get('delta', 0)
         
+        # Status 값에 따른 색상 적용
+        raw_status = res.get('status', 'Fail')
+        if raw_status == 'Success':
+            status_display = f"{COLOR_OK}ONLINE{COLOR_RESET}"
+        else:
+            status_display = f"{COLOR_WARN}OFFLINE{COLOR_RESET}"
+            
         status_msg = f"{COLOR_OK}[NORMAL]{COLOR_RESET}"
-        intelligence_msg = "" # 평소에는 조용히
+        intelligence_msg = ""
         
-        # 지능형 문맥 분석 (Strategy 2 핵심)
         if isinstance(delta, int):
-            # 1. 재부팅 감지 (UpTime이 이전보다 작아졌을 때)
             if info['name'].startswith("SysUpTime") and delta < 0:
                 status_msg = f"{COLOR_WARN}[ALERT]{COLOR_RESET}"
                 intelligence_msg = info.get('alert_context', "장비 상태 변화 감지")
             
-            # 2. 임계치 기반 분석
             for key, limit in THRESHOLD.items():
                 if key in info['name'] and delta >= limit:
                     status_msg = f"{COLOR_WARN}[CRITICAL]{COLOR_RESET}"
                     intelligence_msg = info.get('alert_context', "이상 징후 발생")
         
-        print(f"{res['ip']:<18} | {info['name']:<28} | {info['category']:<12} | {val_str:<18} | {delta:<8} | {status_msg} {intelligence_msg}")
+        # Row 출력에 status_display 추가
+        print(f"{res['ip']:<18} | {info['name']:<25} | {info['category']:<12} | {val_str:<18} | {delta:<8} | {status_display:<20} | {status_msg} {intelligence_msg}")
     
-    print("=" * 115)
+    print("=" * 135)
     print("Press Ctrl+C to stop monitoring...\n")
 
 async def main():
