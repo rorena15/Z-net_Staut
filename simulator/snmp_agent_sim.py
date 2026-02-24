@@ -4,55 +4,60 @@ import time
 import sys
 import os
 import warnings
+import traceback
 
-# Python 3.13 및 asyncio 관련 경고를 숨깁니다.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pysnmp.entity import engine, config
 from pysnmp.entity.rfc3413 import cmdrsp, context
 from pysnmp.carrier.asyncio.dgram import udp
-from pysnmp.smi import instrum
+from pysnmp.smi import instrum, builder
 from pysnmp.proto import rfc1902
 from chaos_simulator import get_simulated_value
 
 class ChaosMibInstrum(instrum.AbstractMibInstrumController):
-    # [교정 1] 인자 없이 초기화해야 TypeError가 발생하지 않습니다.
     def __init__(self):
+        # [수정] 여기에 절대 인자가 들어가면 안 됩니다!
         super().__init__()
         self.start_time = time.time()
 
-    def _process_binds(self, var_binds, is_next=False):
-        result = []
-        for oid, _ in var_binds:
-            oid_str = str(oid)
-            sim_val = get_simulated_value(oid_str, self.start_time)
-            
-            if is_next:
-                print(f"[*] WALK Request: {oid_str}")
-                if "1.3.6.1.2.1.2.2.1.2" in oid_str:
-                    next_oid = rfc1902.ObjectName("1.3.6.1.2.1.2.2.1.2.1")
-                    result.append((next_oid, rfc1902.OctetString("Simulated-Eth0")))
+    def _process_binds(self, varBinds, is_next=False):
+        res = []
+        try:
+            for oid, val in varBinds:
+                oid_str = str(oid)
+                sim_val = get_simulated_value(oid_str, self.start_time)
+                if sim_val is None or sim_val == "": sim_val = 0
+                
+                if is_next:
+                    print(f"[*] WALK Request: {oid_str}")
+                    if "1.3.6.1.2.1.2.2.1.2" in oid_str:
+                        next_oid = rfc1902.ObjectName("1.3.6.1.2.1.2.2.1.2.1")
+                        res.append((next_oid, rfc1902.OctetString("Simulated-Eth0")))
+                    else:
+                        res.append((oid, rfc1902.EndOfMibView()))
                 else:
-                    result.append((oid, rfc1902.EndOfMibView()))
-            else:
-                print(f"[*] GET  Request: {oid_str} -> {sim_val}")
-                if "1.3.6.1.2.1.1.1.0" in oid_str:
-                    result.append((oid, rfc1902.OctetString("Z-Net_Satut Virtual Agent v1.0")))
-                elif "1.3.6.1.2.1.6.9.0" in oid_str:
-                    result.append((oid, rfc1902.Integer(int(sim_val))))
-                elif "1.3.6.1.2.1.2.2.1" in oid_str:
-                    result.append((oid, rfc1902.Counter32(int(sim_val))))
-                else:
-                    result.append((oid, rfc1902.Integer(int(sim_val))))
-        return result
+                    print(f"[*] GET  Request: {oid_str} -> {sim_val}")
+                    if "1.3.6.1.2.1.1.1.0" in oid_str:
+                        res.append((oid, rfc1902.OctetString("Z-Net_Satut Virtual Agent v1.0")))
+                    elif "1.3.6.1.2.1.6.9.0" in oid_str:
+                        res.append((oid, rfc1902.Integer32(int(sim_val))))
+                    elif "1.3.6.1.2.1.2.2.1" in oid_str:
+                        res.append((oid, rfc1902.Counter32(int(sim_val))))
+                    else:
+                        res.append((oid, rfc1902.Integer32(int(sim_val))))
+            return tuple(res)
+        except Exception as e:
+            print(f"[!] 내부 에러: {e}")
+            traceback.print_exc()
+            return varBinds
 
-    # pysnmp 버전별 핸들러 이름 호환성 확보
-    def readVars(self, v, a=None): return self._process_binds(v, False)
-    def read_vars(self, v, a=None): return self._process_binds(v, False)
-    def readNextVars(self, v, a=None): return self._process_binds(v, True)
-    def read_next_vars(self, v, a=None): return self._process_binds(v, True)
+    def read_variables(self, *varBinds, **context):
+        return self._process_binds(varBinds, False)
+
+    def read_next_variables(self, *varBinds, **context):
+        return self._process_binds(varBinds, True)
 
 async def start_agent():
     snmp_engine = engine.SnmpEngine()
@@ -64,29 +69,16 @@ async def start_agent():
     )
 
     config.add_v1_system(snmp_engine, 'my-area', 'public')
-    config.add_vacm_group(snmp_engine, 'my-group', 2, 'my-area')
-    config.add_vacm_access(snmp_engine, 'my-group', '', 2, 'noAuthNoPriv', 'exact', 'my-view', '', '')
-    
-    # [교정 2] 정확한 인자 순서: (engine, viewName, viewType, subTree, subTreeMask)
-    config.add_vacm_view(snmp_engine, 'my-view', 'included', '1.3.6.1', '')
+    config.add_vacm_user(snmp_engine, 2, 'my-area', 'noAuthNoPriv', (1, 3, 6))
 
-    # [교정 1 연장] 불필요한 mib_builder 제거
     chaos_instrum = ChaosMibInstrum()
     snmp_context = context.SnmpContext(snmp_engine)
     
-    # 중복 컨텍스트 에러 방지용 초기화
-    for unreg_name in ('unregister_context_name', 'unregisterContextName'):
-        unreg_fn = getattr(snmp_context, unreg_name, None)
-        if unreg_fn:
-            try: unreg_fn(b'')
-            except: pass
-            break
-
-    for reg_name in ('register_context_name', 'registerContextName'):
-        reg_fn = getattr(snmp_context, reg_name, None)
-        if reg_fn:
-            reg_fn(b'', chaos_instrum)
-            break
+    try:
+        getattr(snmp_context, 'unregisterContextName', getattr(snmp_context, 'unregister_context_name'))(b'')
+    except Exception:
+        pass
+    getattr(snmp_context, 'registerContextName', getattr(snmp_context, 'register_context_name'))(b'', chaos_instrum)
 
     cmdrsp.GetCommandResponder(snmp_engine, snmp_context)
     cmdrsp.NextCommandResponder(snmp_engine, snmp_context)
