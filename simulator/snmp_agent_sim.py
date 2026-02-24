@@ -12,13 +12,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pysnmp.entity import engine, config
 from pysnmp.entity.rfc3413 import cmdrsp, context
 from pysnmp.carrier.asyncio.dgram import udp
-from pysnmp.smi import instrum, builder
-from pysnmp.proto import rfc1902
+from pysnmp.smi import instrum
+from pysnmp.proto import rfc1902, rfc1905  # [수정] rfc1905 추가 임포트
 from chaos_simulator import get_simulated_value
 
 class ChaosMibInstrum(instrum.AbstractMibInstrumController):
     def __init__(self):
-        # [수정] 여기에 절대 인자가 들어가면 안 됩니다!
         super().__init__()
         self.start_time = time.time()
 
@@ -31,20 +30,28 @@ class ChaosMibInstrum(instrum.AbstractMibInstrumController):
                 if sim_val is None or sim_val == "": sim_val = 0
                 
                 if is_next:
+                    # [WALK 로직 핵심 수정] 무한 루프 방지 및 정확한 응답
                     print(f"[*] WALK Request: {oid_str}")
-                    if "1.3.6.1.2.1.2.2.1.2" in oid_str:
+                    
+                    # 1. 인터페이스 목록 시작점 요청 시 (Base OID)
+                    if oid_str == "1.3.6.1.2.1.2.2.1.2":
                         next_oid = rfc1902.ObjectName("1.3.6.1.2.1.2.2.1.2.1")
                         res.append((next_oid, rfc1902.OctetString("Simulated-Eth0")))
+                    
+                    # 2. 이미 값이 있는 인덱스(.1 등)에 대해 다음 값을 요청하면 종료 신호 전송
                     else:
-                        res.append((oid, rfc1902.EndOfMibView()))
+                        # [수정] rfc1902가 아닌 rfc1905.EndOfMibView() 사용
+                        res.append((oid, rfc1905.EndOfMibView()))
                 else:
+                    # GET 요청 처리는 기존과 동일
                     print(f"[*] GET  Request: {oid_str} -> {sim_val}")
                     if "1.3.6.1.2.1.1.1.0" in oid_str:
                         res.append((oid, rfc1902.OctetString("Z-Net_Satut Virtual Agent v1.0")))
                     elif "1.3.6.1.2.1.6.9.0" in oid_str:
                         res.append((oid, rfc1902.Integer32(int(sim_val))))
                     elif "1.3.6.1.2.1.2.2.1" in oid_str:
-                        res.append((oid, rfc1902.Counter32(int(sim_val))))
+                        safe_val = int(sim_val) % 4294967296
+                        res.append((oid, rfc1902.Counter32(safe_val)))
                     else:
                         res.append((oid, rfc1902.Integer32(int(sim_val))))
             return tuple(res)

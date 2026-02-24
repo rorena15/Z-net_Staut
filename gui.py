@@ -1,6 +1,7 @@
 import sys
 import asyncio
 import warnings
+import time
 import numpy as np
 import pyqtgraph as pg
 from datetime import datetime
@@ -207,6 +208,11 @@ class ZNetSatutGUI(QMainWindow):
             self.table.setColumnWidth(i, w)
 
         # [기능 1] 실시간 그래프 영역 추가
+        date_axis = pg.DateAxisItem(orientation='bottom')
+        self.plot_widget = pg.PlotWidget(
+            title="Real-time Traffic Trend",
+            axisItems={'bottom': date_axis} # 시간 축 적용
+        )
         self.plot_widget = pg.PlotWidget(title="Traffic Trend (Delta Analysis)")
         self.plot_widget.setBackground('#101010')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
@@ -229,13 +235,28 @@ class ZNetSatutGUI(QMainWindow):
         row = item.row()
         ip = self.table.item(row, 0).text()
         metric = self.table.item(row, 1).text()
+        category = self.table.item(row, 2).text() # 카테고리(Traffic 등) 가져오기
         self.current_selected_key = f"{ip}_{metric}"
+        # [수정] 카테고리에 따라 Y축 단위 설정
+        if category == "Traffic":
+            # units='B'를 주면 1024 단위로 K, M, G를 자동 계산해줍니다.
+            self.plot_widget.setLabel('left', 'Traffic', units='B')
+        else:
+            # 세션 수 등은 단위를 비워서 지수 표기법만 방지
+            self.plot_widget.setLabel('left', 'Count', units='')
         self.update_plot()
+        
 
     def update_plot(self):
         if self.current_selected_key in self.history_data:
-            data = self.history_data[self.current_selected_key]
-            self.plot_curve.setData(data)
+            data_points = self.history_data[self.current_selected_key]
+            if not data_points: return
+            
+            # x축(시간)과 y축(값) 리스트로 분리
+            x = [pt[0] for pt in data_points]
+            y = [pt[1] for pt in data_points]
+            
+            self.plot_curve.setData(x, y) # 시간과 값을 동시에 전달
             self.plot_widget.setTitle(f"Trend Analysis: {self.current_selected_key}")
 
     def open_settings(self):
@@ -250,28 +271,27 @@ class ZNetSatutGUI(QMainWindow):
             # [1] UI 및 메모리 데이터 즉시 초기화
             self.table.setRowCount(0)
             self.log_console.clear()
-            self.history_data.clear() # 이전 분석 데이터 삭제
-            self.plot_curve.setData([]) # 그래프 초기화
+            self.history_data.clear() 
+            self.plot_curve.setData([]) 
             self.current_selected_key = None
             
-            # [2] DB 내 127.0.0.1(시뮬레이션) 관련 기존 이력 삭제 (선택 사항)
-            # 이 코드는 이전 세션의 'Ghost Delta'가 계산되는 것을 방지합니다.
+            # [2] DB 초기화 (테이블 이름 불일치 수정: snmp_metrics)
             try:
                 import sqlite3
                 conn = sqlite3.connect(DB_NAME)
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM scan_results WHERE ip = '127.0.0.1'")
+                # db_manager.py에 정의된 테이블 이름인 snmp_metrics로 수정
+                cursor.execute("DELETE FROM snmp_metrics WHERE ip = '127.0.0.1'")
                 conn.commit()
                 conn.close()
                 self.append_log("[*] 시뮬레이션 타겟(127.0.0.1)의 DB 이력을 초기화했습니다.")
             except Exception as e:
-                self.append_log(f"[!] DB 초기화 실패: {e}")
+                self.append_log(f"[*] 알림: 초기 데이터 정리 건너뜀 ({e})")
 
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.status_bar.setStyleSheet("color: #50fa7b; font-weight: bold;")
             
-            # 엔진 시작 (새로운 세션 시작)
             self.worker.start()
 
     def stop_monitoring(self):
@@ -286,7 +306,15 @@ class ZNetSatutGUI(QMainWindow):
     def update_table(self, results, scan_time):
         self.table.setRowCount(0)
         self.status_bar.showMessage(f"상태: LIVE | 주기: {self.worker.scan_interval}s | 최근 스캔: {scan_time}")
-
+        
+        results.sort(key=lambda x: (
+            # IP 주소(127.0.0.1)는 127.000.000.001 형태로 변환하여 숫자 순서 유지
+            # 도메인 주소(demo.pysnmp.com)는 문자열 그대로 사용하여 비교 가능하게 함
+            ".".join(p.zfill(3) for p in x['ip'].split('.')) if all(p.isdigit() for p in x['ip'].split('.') if p) else x['ip'],
+            # 2순위: 메트릭 이름 기준 정렬
+            get_oid_info(x['oid'])['name']
+        ))
+        current_ts = time.time()
         for row, res in enumerate(results):
             self.table.insertRow(row)
             info = get_oid_info(res['oid'])
@@ -296,44 +324,40 @@ class ZNetSatutGUI(QMainWindow):
             # 히스토리 데이터 축적
             if isinstance(delta, int):
                 if key not in self.history_data: self.history_data[key] = []
-                self.history_data[key].append(delta)
+                self.history_data[key].append((current_ts, delta))
                 if len(self.history_data[key]) > self.max_history: self.history_data[key].pop(0)
 
-            # [보안 분석 로직 강화]
+            # [보안 분석 로직] 안내 메시지 형식 통일
             intel_text, intel_color = "[NORMAL]", QColor("#50fa7b")
             
             if isinstance(delta, int):
                 is_alert = False
-                # 공통으로 사용할 알림 메세지 (library.py 정의값 활용)
-                alert_msg = info.get('alert_context', '이상 징후 탐지')
+                alert_msg = info.get('alert_context', '이상 징후 탐지') # library.py의 메세지 활용
                 
                 # [1] 절대 임계치 체크 (config.py 기준)
                 for th_key, limit in THRESHOLD.items():
-                    if th_key.lower() in info['name'].lower():
-                        # 트래픽의 경우 Delta(변화량)가 설정한 limit(Bps)을 넘었을 때만 판정
-                        if delta >= limit:
-                            # 안내 메세지 형식 통일
-                            intel_text = f"[CRITICAL] {alert_msg}"
-                            intel_color = QColor("#ff5555") # 고정 임계치 초과는 명확한 빨간색
-                            is_alert = True
-                            break
+                    if th_key.lower() in info['name'].lower() and delta >= limit:
+                        intel_text = f"[CRITICAL] {alert_msg}" # 메시지 형식 통일
+                        intel_color = QColor("#ff5555")
+                        is_alert = True
+                        break
                 
-                # [2] 동적 스파이크 체크 (평균 대비 5배로 상향하여 민감도 조절)
+                # [2] 동적 스파이크 체크 (평균 대비 5배)
                 if not is_alert and len(self.history_data.get(key, [])) >= 5:
                     avg_val = np.mean(self.history_data[key][:-1])
-                    
-                    # 기저 트래픽이 어느 정도 있을 때(1MB 이상), 평소보다 5배 튀면 경고
-                    if avg_val > 1048576 and delta > avg_val * 5:
-                        # [1]번 로직과 안내 메세지 형식을 완전히 동일하게 구성
+                    # Delta가 4GB 근처라면 시뮬레이션 노이즈에 의한 역전 현상으로 간주하여 무시
+                    if delta > 4000000000: 
+                        intel_text = "[LEARNING]" 
+                        intel_color = QColor("#888888")
+                    elif avg_val > 1048576 and delta > avg_val * 5:
                         intel_text = f"[CRITICAL] {alert_msg}"
-                        # 탐지 기법의 차이만 시각적으로 인지할 수 있도록 주황색 계열 유지
-                        intel_color = QColor("#ffb86c") 
+                        intel_color = QColor("#ffb86c")
                         is_alert = True
             else:
                 intel_text = "[N/A]"
                 intel_color = QColor("#888888")
 
-            # 3. 테이블 아이템 생성 및 스타일 적용 (이하 로직 동일)
+            # 가독성 높은 단위 변환 출력 적용
             is_online = (res.get('status') == 'Success')
             val_display = self.format_value(res['value'], info['category']) if is_online else "-"
             delta_display = self.format_value(delta, info['category']) if isinstance(delta, int) else "-"
