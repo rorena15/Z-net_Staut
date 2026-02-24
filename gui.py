@@ -213,7 +213,6 @@ class ZNetSatutGUI(QMainWindow):
             title="Real-time Traffic Trend",
             axisItems={'bottom': date_axis} # 시간 축 적용
         )
-        self.plot_widget = pg.PlotWidget(title="Traffic Trend (Delta Analysis)")
         self.plot_widget.setBackground('#101010')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_curve = self.plot_widget.plot(pen=pg.mkPen(color='#50fa7b', width=2))
@@ -344,7 +343,10 @@ class ZNetSatutGUI(QMainWindow):
                 
                 # [2] 동적 스파이크 체크 (평균 대비 5배)
                 if not is_alert and len(self.history_data.get(key, [])) >= 5:
-                    avg_val = np.mean(self.history_data[key][:-1])
+                    # [수정] 튜플 리스트에서 값(delta)만 추출하여 평균 계산
+                    history_values = [pt[1] for pt in self.history_data[key][:-1]]
+                    avg_val = np.mean(history_values)
+                    
                     # Delta가 4GB 근처라면 시뮬레이션 노이즈에 의한 역전 현상으로 간주하여 무시
                     if delta > 4000000000: 
                         intel_text = "[LEARNING]" 
