@@ -4,6 +4,7 @@ from datetime import datetime
 from snmp_engine import ZNetSatutEngineAsync
 from db_manager import init_db, save_to_db
 from config import TARGETS, DB_NAME, SCAN_INTERVAL, THRESHOLD
+from library import get_oid_info
 
 # OID를 사람이 읽기 쉬운 이름으로 매핑 (인덱스 제외한 기본형)
 OID_MAP = {
@@ -20,31 +21,34 @@ COLOR_OK = "\033[92m"
 
 def display_realtime_status(scan_time, results):
     os.system('cls' if os.name == 'nt' else 'clear')
-    print(f"\n[ Z-Net_Satut Real-Time Monitor ] - {scan_time}")
+    print(f"\n[ Z-Net_Satut SecOps Monitor ] - {scan_time}")
     print("=" * 115)
-    print(f"{'Target IP':<18} | {'Metric':<25} | {'Status':<7} | {'Value':<20} | {'Delta':<10} | {'Alert'}")
+    print(f"{'Target IP':<18} | {'Metric Name':<28} | {'Category':<12} | {'Value':<18} | {'Delta':<8} | {'Security Intelligence'}")
     print("-" * 115)
     
     for res in results:
-        # 동적 OID 대응 (예: 1.3.6.1.2.1.2.2.1.10.1 -> In_Traffic.1)
-        base_oid = ".".join(res['oid'].split('.')[:-1])
-        idx = res['oid'].split('.')[-1]
-        metric_name = OID_MAP.get(res['oid'], OID_MAP.get(base_oid, res['oid']))
-        full_metric = f"{metric_name}.{idx}" if base_oid in OID_MAP else metric_name
-        
-        val_str = str(res['value'])[:20]
+        info = get_oid_info(res['oid'])
+        val_str = str(res['value'])[:18]
         delta = res.get('delta', 0)
         
-        alert_msg = f"{COLOR_OK}[NORMAL]{COLOR_RESET}"
-        # Metric 이름에 In_Traffic이나 Out_Traffic이 포함된 경우 임계치 체크
+        status_msg = f"{COLOR_OK}[NORMAL]{COLOR_RESET}"
+        intelligence_msg = "" # 평소에는 조용히
+        
+        # 지능형 문맥 분석 (Strategy 2 핵심)
         if isinstance(delta, int):
+            # 1. 재부팅 감지 (UpTime이 이전보다 작아졌을 때)
+            if info['name'].startswith("SysUpTime") and delta < 0:
+                status_msg = f"{COLOR_WARN}[ALERT]{COLOR_RESET}"
+                intelligence_msg = info.get('alert_context', "장비 상태 변화 감지")
+            
+            # 2. 임계치 기반 분석
             for key, limit in THRESHOLD.items():
-                if key in full_metric and delta >= limit:
-                    alert_msg = f"{COLOR_WARN}[WARNING!]{COLOR_RESET}"
+                if key in info['name'] and delta >= limit:
+                    status_msg = f"{COLOR_WARN}[CRITICAL]{COLOR_RESET}"
+                    intelligence_msg = info.get('alert_context', "이상 징후 발생")
         
-        delta_str = str(delta) if delta != '-' else '-'
-        print(f"{res['ip']:<18} | {full_metric:<25} | {res['status']:<7} | {val_str:<20} | {delta_str:<10} | {alert_msg}")
-        
+        print(f"{res['ip']:<18} | {info['name']:<28} | {info['category']:<12} | {val_str:<18} | {delta:<8} | {status_msg} {intelligence_msg}")
+    
     print("=" * 115)
     print("Press Ctrl+C to stop monitoring...\n")
 
