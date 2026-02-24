@@ -1,11 +1,16 @@
-# config.py
-
 TARGETS = [
-    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.1.1.0", "public"),
-    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.1.5.0", "public"),
-    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.6.9.0", "public"),
-    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.2.2.1.10.1", "public"),
-    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.2.2.1.16.1", "public"),
+    # (IP, Port, OID, Community, Protocol)
+    # external 테스트 주소 (UDP 사용)
+    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.1.1.0", "public", "udp"),
+    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.1.5.0", "public", "udp"),
+    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.6.9.0", "public", "udp"),
+    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.2.2.1.10.1", "public", "udp"),
+    ("demo.pysnmp.com", 161, "1.3.6.1.2.1.2.2.1.16.1", "public", "udp"),
+    
+    # local 테스트 주소 (아까 netstat에서 확인된 TCP 사용)
+    ("127.0.0.1", 1161, "1.3.6.1.2.1.1.1.0", "public", "tcp"),      # 로컬 장비 설명
+    ("127.0.0.1", 1161, "1.3.6.1.2.1.2.2.1.10.1", "public", "tcp"), # 로컬 수신 트래픽
+    ("127.0.0.1", 1161, "1.3.6.1.2.1.2.2.1.16.1", "public", "tcp"), # 로컬 송신 트래픽
 ]
 
 DB_NAME = "z_net_satut.db"
