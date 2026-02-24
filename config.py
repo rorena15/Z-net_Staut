@@ -20,6 +20,7 @@ SCAN_INTERVAL = 10
 # 보안 임계치 설정 (Delta 값 기준)
 THRESHOLD = {
     "TCP Sessions": 50,      # 10초 내 세션이 50개 이상 증가 시
-    "In_Traffic": 1000000,   # 10초 내 1MB 이상 수신 시 (단위: Octets/Bytes)
-    "Out_Traffic": 1000000,  # 10초 내 1MB 이상 송신 시
+    "In_Traffic": 104857600,   # 10초 내 1MB 이상 수신 시 (단위: Octets/Bytes)
+    "Out_Traffic": 104857600,  # 10초 내 1MB 이상 송신 시
+    "Uptime": 0                  # 시스템 재부팅 감지용
 }

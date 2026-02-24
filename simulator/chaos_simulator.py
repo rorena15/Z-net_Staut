@@ -1,21 +1,46 @@
-# simulator/chaos_simulator.py 수정
+import random
 import time
+import math
 
 def get_simulated_value(oid, start_time):
-    elapsed = int(time.time() - start_time)
-    oid_str = str(oid)
+    elapsed = time.time() - start_time
     
-    # 1. TCP Sessions (OID에 1.6.9.0이 포함되면 무조건 매칭)
-    if "1.6.9.0" in oid_str:
-        # 실행 즉시 임계치(50)를 넘도록 100부터 시작하여 폭증 시뮬레이션
-        return 100 + (elapsed * 20)
+    # [1] 기본 노이즈 및 파동 (Basics)
+    # 0.95 ~ 1.05 사이의 가우시안 노이즈 (더 실무적인 흔들림)
+    noise = random.gauss(1.0, 0.02)
+    # 10초 주기의 완만한 트래픽 파동
+    wave = math.sin(elapsed * 0.6) * 0.05
     
-    # 2. Traffic (10번 수신, 16번 송신)
-    if "1.2.2.1.10" in oid_str or "1.2.2.1.16" in oid_str:
-        return 2000000 + (elapsed * 500000)
-        
-    # 3. SysDescr 등 기본값
-    if "1.3.6.1.2.1.1.1.0" in oid_str:
-        return 0 # 문자열 응답은 시뮬레이터에서 처리
-        
-    return 10 # 기본값
+    # [2] 랜덤 마이크로 버스트 (정상 상황에서도 가끔 발생하는 일시적 튀튀)
+    burst = 0
+    if random.random() > 0.92: # 약 8% 확률로 발생
+        burst = random.uniform(1.2, 1.5)
+
+    # TCP Sessions (1.3.6.1.2.1.6.9.0)
+    if "1.6.9.0" in oid:
+        base = 180
+        if elapsed < 30:
+            val = base * (noise + wave)
+            if burst > 0: val *= burst # 정상 범위 내 일시적 상승
+            return int(val)
+        elif 30 <= elapsed < 60:
+            ramp = (elapsed - 30) * 35
+            return int((base + ramp) * noise)
+        else:
+            return int(4200 * noise)
+
+    # Inbound Traffic (1.3.6.1.2.1.2.2.1.10)
+    elif "1.2.2.1.10" in oid:
+        base_traffic = 8388608 # 약 8MB
+        if elapsed < 30:
+            val = base_traffic * (noise + wave)
+            if burst > 0: val *= (burst * 1.2)
+            return int(val)
+        elif 30 <= elapsed < 70:
+            # 서서히 가속도가 붙는 상승 (Exponential-like)
+            ramp = math.pow(elapsed - 30, 1.8) * 1000000
+            return int((base_traffic + ramp) * noise)
+        else:
+            return int(524288000 * noise) # 500MB+ 폭증
+
+    return int(100 * noise)
