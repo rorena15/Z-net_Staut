@@ -1,10 +1,22 @@
 # simulator/snmp_agent_sim.py
+"""
+genErr / 요청 미도달 근본 해결:
+
+pysnmp 5.x에서 커스텀 MIB 컨트롤러가 실제로 호출되려면
+instrum.MibInstrumController를 상속하되,
+내부 디스패처가 찾는 __verifyAccess, getMibInstrum 등
+부모 메서드를 그대로 유지해야 함.
+
+핵심: pysnmp 5.x는 GET PDU 수신 시
+  context → mibInstrum.readVars() 를 호출하는데,
+  이 경로가 동작하려면 MibInstrumController의
+  __init__(mibBuilder) 을 반드시 호출해야 함.
+"""
 import asyncio
 import time
 import sys
 import os
 
-# chaos_simulator 경로: 실행 위치 무관하게 이 파일 기준으로 상위 폴더를 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pysnmp.entity import engine, config
@@ -14,74 +26,76 @@ from pysnmp.smi import instrum, builder
 from pysnmp.proto import rfc1902
 from chaos_simulator import get_simulated_value
 
-# ────────────────────────────────────────────────────────────────
-# [BUG FIX #1] MibInstrumController → AbstractMibInstrumController
-#              read_vars / read_next_vars → readVars / readNextVars
-#
-# 원인: pysnmp 5.x 내부 디스패처는 camelCase 메서드(readVars)를 호출함.
-#       snake_case(read_vars)로 정의하면 핸들러가 실행되지 않아
-#       varBinds가 비어 있는 응답이 반환되고, Value 컬럼이 빈칸이 됨.
-# ────────────────────────────────────────────────────────────────
-class ChaosMibInstrum(instrum.AbstractMibInstrumController):
-    """
-    pysnmp 5.x 호환 커스텀 MIB 컨트롤러.
 
-    genErr 방어 포인트:
-      1. super().__init__() 호출 → 부모 클래스 내부 상태 초기화 누락 방지
-      2. varBinds 언패킹을 varBind[0]/varBind[1]로 안전하게 처리
-         (pysnmp 버전에 따라 VarBind 객체 또는 튜플로 전달될 수 있음)
-      3. readVars 전체를 try/except로 감싸 내부 예외가 genErr로
-         전파되지 않도록 격리
+class ChaosMibInstrum(instrum.MibInstrumController):
+    """
+    pysnmp 5.x 호환.
+
+    MibInstrumController를 상속하고 __init__에 MibBuilder를 전달.
+    메서드명은 pysnmp 5.x snake_case: read_vars / read_next_vars.
+    (AbstractMibInstrumController + camelCase 방식이 genErr를 유발했음)
     """
 
-    def __init__(self):
-        # [FIX] 부모 클래스 초기화 누락 → genErr 원인 중 하나
-        super().__init__()
+    def __init__(self, mib_builder):
+        # 부모 __init__ 반드시 호출 (내부 _mibBuilder 등 상태 초기화)
+        super().__init__(mib_builder)
         self.start_time = time.time()
 
-    def _make_response(self, varBinds, is_next=False):
-        """GET / GETNEXT 공통 응답 생성 로직."""
-        new_vars = []
-        try:
-            for varBind in varBinds:
-                # [FIX] 튜플/VarBind 객체 모두 대응
-                oid = varBind[0]
-                oid_str = str(oid)
-                sim_val = get_simulated_value(oid_str, self.start_time)
+    # pysnmp 5.x MibInstrumController 실제 호출 메서드 (snake_case)
+    def read_vars(self, var_binds, acInfo=None):
+        result = []
+        for oid, _ in var_binds:
+            oid_str = str(oid)
+            sim_val = get_simulated_value(oid_str, self.start_time)
+            print(f"[*] GET  {oid_str} -> {sim_val}")
 
-                if is_next:
-                    print(f"[*] WALK  Request: {oid_str}")
-                    if oid_str == "1.3.6.1.2.1.2.2.1.2":
-                        next_oid = rfc1902.ObjectName("1.3.6.1.2.1.2.2.1.2.1")
-                        new_vars.append((next_oid, rfc1902.OctetString("Simulated-Eth0")))
-                    else:
-                        new_vars.append((oid, rfc1902.EndOfMibView()))
-                else:
-                    print(f"[*] GET   Request: {oid_str} -> {sim_val}")
-                    if "1.3.6.1.2.1.1.1.0" in oid_str:
-                        new_vars.append((oid, rfc1902.OctetString("Z-Net_Satut Virtual Agent v1.0")))
-                    elif "1.3.6.1.2.1.2.2.1" in oid_str:
-                        new_vars.append((oid, rfc1902.Counter32(int(sim_val))))
-                    else:
-                        new_vars.append((oid, rfc1902.Integer(int(sim_val))))
+            if "1.3.6.1.2.1.1.1.0" in oid_str:
+                result.append((oid, rfc1902.OctetString("Z-Net_Satut Virtual Agent v1.0")))
+            elif "1.3.6.1.2.1.2.2.1" in oid_str:
+                result.append((oid, rfc1902.Counter32(int(sim_val))))
+            else:
+                result.append((oid, rfc1902.Integer(int(sim_val))))
+        return result
 
-        except Exception as e:
-            # [FIX] 내부 예외를 출력만 하고 genErr로 전파되지 않게 격리
-            print(f"[!] MIB handler error: {e}")
+    def read_next_vars(self, var_binds, acInfo=None):
+        result = []
+        for oid, _ in var_binds:
+            oid_str = str(oid)
+            print(f"[*] WALK {oid_str}")
+            if "1.3.6.1.2.1.2.2.1.2" in oid_str:
+                next_oid = rfc1902.ObjectName("1.3.6.1.2.1.2.2.1.2.1")
+                result.append((next_oid, rfc1902.OctetString("Simulated-Eth0")))
+            else:
+                result.append((oid, rfc1902.EndOfMibView()))
+        return result
 
-        return new_vars
 
-    def readVars(self, varBinds, acInfo=(None, None)):
-        return self._make_response(varBinds, is_next=False)
+async def _probe_api(snmp_context, chaos_instrum):
+    """
+    pysnmp 버전별 context 등록 API를 자동 감지하여 호출.
+    5.x: register_context_name (snake_case)
+    4.x: registerContextName  (camelCase)
+    """
+    registered = False
+    for unreg_name in ('unregister_context_name', 'unregisterContextName'):
+        fn = getattr(snmp_context, unreg_name, None)
+        if fn:
+            try:
+                fn(b'')
+            except Exception:
+                pass
+            break
 
-    def readNextVars(self, varBinds, acInfo=(None, None)):
-        return self._make_response(varBinds, is_next=True)
+    for reg_name in ('register_context_name', 'registerContextName'):
+        fn = getattr(snmp_context, reg_name, None)
+        if fn:
+            fn(b'', chaos_instrum)
+            print(f"[*] Context registered via: {reg_name}")
+            registered = True
+            break
 
-    def writeVars(self, varBinds, acInfo=(None, None)):
-        return varBinds
-
-    def readVarsType(self, varBinds, acInfo=(None, None)):
-        return varBinds
+    if not registered:
+        raise RuntimeError("SnmpContext에서 register_context_name을 찾을 수 없음")
 
 
 async def start_agent():
@@ -98,21 +112,15 @@ async def start_agent():
     config.add_vacm_access(
         snmp_engine, 'my-group', '', 2, 'noAuthNoPriv', 'exact', 'my-view', '', ''
     )
-    # (engine, viewName, viewType, subTree, subTreeMask)
     config.add_vacm_view(snmp_engine, 'my-view', 'included', '1.3.6.1', '')
 
+    # MibBuilder를 생성하고 MibInstrumController에 전달 (필수)
+    mib_builder   = builder.MibBuilder()
+    chaos_instrum = ChaosMibInstrum(mib_builder)
+
     snmp_context = context.SnmpContext(snmp_engine)
+    await _probe_api(snmp_context, chaos_instrum)
 
-    # [BUG FIX #1 연속] AbstractMibInstrumController는 MibBuilder 인자 불필요
-    chaos_instrum = ChaosMibInstrum()
-
-    # [BUG FIX] pysnmp 5.x: camelCase → snake_case API
-    try:
-        snmp_context.unregister_context_name(b'')
-    except Exception:
-        pass
-
-    snmp_context.register_context_name(b'', chaos_instrum)
     cmdrsp.GetCommandResponder(snmp_engine, snmp_context)
     cmdrsp.NextCommandResponder(snmp_engine, snmp_context)
 
