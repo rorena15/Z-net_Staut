@@ -2,15 +2,12 @@
 import asyncio
 import os
 import sys
+import re as _re
 from datetime import datetime
 from snmp_engine import ZNetSatutEngineAsync
 from db_manager import init_db, save_to_db
 from config import TARGETS, DB_NAME, SCAN_INTERVAL, THRESHOLD
 from library import get_oid_info
-
-# ────────────────────────────────────────────────────────────────
-# [BUG FIX #3] OID_MAP dead code 제거 (library.py의 get_oid_info와 중복)
-# ────────────────────────────────────────────────────────────────
 
 COLOR_RESET = "\033[0m"
 COLOR_WARN  = "\033[91m"
@@ -18,31 +15,37 @@ COLOR_OK    = "\033[92m"
 COLOR_DIM   = "\033[90m"
 COLOR_BOLD  = "\033[1m"
 
-_SENTINEL = object()  # 첫 회 감지용 sentinel
+_SENTINEL = object()
 
-# 컬럼 너비 (| 구분자 포함 전체 135자 맞춤)
-_W = {
-    'ip':      18,
-    'name':    25,
-    'cat':     12,
-    'val':     18,
-    'delta':    8,
-    'status':  10,
-}
-_SEP   = " | "
-_WIDTH = sum(_W.values()) + len(_SEP) * (len(_W)) + 25  # intel 컬럼 포함
+# 컬럼 너비 (화면 출력 기준, ANSI 코드 제외)
+_W_IP    = 18
+_W_NAME  = 25
+_W_CAT   = 12
+_W_VAL   = 18
+_W_DELTA =  8
+_W_STS   = 10
+_LINE    = 135
 
 
-def _row(ip, name, cat, val, delta, status_str, intel):
-    """컬럼 너비를 맞춘 한 행 반환 (ANSI 코드 포함)"""
-    # ANSI 코드는 출력 너비에 영향 없으므로 ljust는 raw 문자열 기준으로 계산
+def _ansi_ljust(s: str, width: int) -> str:
+    """
+    ANSI 이스케이프 코드를 제외한 실제 출력 문자 수 기준으로 ljust.
+    일반 f-string ljust는 ANSI 코드 바이트까지 길이에 포함하여
+    Status 컬럼이 ONLINE/OFFLINE 이후 들쭉날쭉하게 정렬되는 문제를 해결.
+    """
+    visible = len(_re.sub(r'\033\[[0-9;]*m', '', s))
+    return s + ' ' * max(0, width - visible)
+
+
+def _fmt_row(ip, name, cat, val, delta, status, intel):
+    """컬럼 고정폭 행. ANSI 포함 컬럼(status)은 _ansi_ljust 사용."""
     return (
-        f"{ip:<{_W['ip']}}{_SEP}"
-        f"{name:<{_W['name']}}{_SEP}"
-        f"{cat:<{_W['cat']}}{_SEP}"
-        f"{val:<{_W['val']}}{_SEP}"
-        f"{delta:<{_W['delta']}}{_SEP}"
-        f"{status_str:<{_W['status']}}      {_SEP}"
+        f"{ip:<{_W_IP}} | "
+        f"{name:<{_W_NAME}} | "
+        f"{cat:<{_W_CAT}} | "
+        f"{val:<{_W_VAL}} | "
+        f"{delta:<{_W_DELTA}} | "
+        f"{_ansi_ljust(status, _W_STS)} | "
         f"{intel}"
     )
 
@@ -50,85 +53,75 @@ def _row(ip, name, cat, val, delta, status_str, intel):
 def display_realtime_status(scan_time, results):
     os.system('cls' if os.name == 'nt' else 'clear')
 
-    divider = "=" * 135
-    thin    = "-" * 135
+    SEP = "=" * _LINE
+    DIV = "-" * _LINE
 
     print(f"\n{COLOR_BOLD}[ Z-Net_Satut SecOps Monitor ]{COLOR_RESET} - {scan_time}")
-    print(divider)
-    print(_row("Target IP", "Metric Name", "Category",
-               "Value", "Delta", "Status", "Security Intelligence"))
-    print(thin)
+    print(SEP)
+    print(_fmt_row(
+        "Target IP", "Metric Name", "Category",
+        "Value", "Delta", "Status", "Security Intelligence"
+    ))
+    print(DIV)
 
     for res in results:
-        info    = get_oid_info(res['oid'])
-        val_raw = res['value']
-        delta   = res.get('delta')
+        info  = get_oid_info(res['oid'])
+        delta = res.get('delta')
 
-        # ── Value 문자열 (18자 truncate) ──
-        val_str = (str(val_raw) if val_raw is not None else '-')[:18]
+        # Value (18자 truncate)
+        val_str = (str(res['value']) if res['value'] is not None else '-')[:_W_VAL]
 
-        # ── Status 컬럼 ──
+        # Delta
+        delta_str = '-' if (delta is None or delta == '-') else str(delta)
+
+        # Status
         if res.get('status') == 'Success':
             status_str = f"{COLOR_OK}ONLINE{COLOR_RESET}"
         else:
             status_str = f"{COLOR_WARN}OFFLINE{COLOR_RESET}"
 
-        # ── Delta 컬럼 ──
-        if delta is None:
-            delta_str = f"{COLOR_DIM}-{COLOR_RESET}"
-        elif delta == '-':
-            delta_str = '-'
-        else:
-            delta_str = str(delta)
-
-        # ── Security Intelligence ──
-        intel_str = f"{COLOR_OK}[NORMAL]{COLOR_RESET}"
+        # Security Intelligence
+        intel_tag = f"{COLOR_OK}[NORMAL]{COLOR_RESET}"
         intel_msg = ""
 
         if isinstance(delta, int):
             if info['name'].startswith("SysUpTime") and delta < 0:
-                intel_str = f"{COLOR_WARN}[ALERT]{COLOR_RESET}"
+                intel_tag = f"{COLOR_WARN}[ALERT]{COLOR_RESET}"
                 intel_msg = info.get('alert_context', "장비 상태 변화 감지")
+            else:
+                for key, limit in THRESHOLD.items():
+                    if key in info['name'] and delta >= limit:
+                        intel_tag = f"{COLOR_WARN}[CRITICAL]{COLOR_RESET}"
+                        intel_msg = info.get('alert_context', "이상 징후 발생")
+        else:
+            # delta가 None(첫 수집) 또는 '-'(문자열) 모두 N/A
+            intel_tag = f"{COLOR_DIM}[N/A]{COLOR_RESET}"
 
-            for key, limit in THRESHOLD.items():
-                if key in info['name'] and delta >= limit:
-                    intel_str = f"{COLOR_WARN}[CRITICAL]{COLOR_RESET}"
-                    intel_msg = info.get('alert_context', "이상 징후 발생")
-        elif delta in (None, '-'):
-            intel_str = f"{COLOR_DIM}[N/A]{COLOR_RESET}"
+        intel_col = f"{intel_tag} {intel_msg}".strip()
 
-        intel_col = f"{intel_str} {intel_msg}".strip()
-
-        print(_row(
+        print(_fmt_row(
             res['ip'], info['name'], info['category'],
             val_str, delta_str, status_str, intel_col
         ))
 
-    print(divider)
+    print(SEP)
     print("Press Ctrl+C to stop monitoring...\n")
 
 
 async def main():
     engine    = ZNetSatutEngineAsync()
     db_conn   = init_db(DB_NAME)
-
-    # ── [BUG FIX #3] sentinel으로 '아직 수집 안 됨'과 '값=0'을 구분 ──
-    # previous_data[key] = _SENTINEL  → 첫 회 → delta=None
-    # previous_data[key] = 0          → 이전값이 실제 0 → delta 계산
     previous_data: dict = {}
 
     print("[*] Initializing Z-Net_Satut Dynamic Engine...")
-    dynamic_targets = list(TARGETS)   # config 기본 타겟 복사
+    dynamic_targets = list(TARGETS)
 
-    # 인터페이스 자동 탐색 (Walk)
+    # 인터페이스 자동 탐색 (Walk) - IP당 1회만
     seen_ips = set()
     for target in TARGETS:
         ip, port, oid, comm, proto = target
-        if ip in seen_ips:
+        if ip in seen_ips or "1.1.1.0" not in oid:
             continue
-        if "1.1.1.0" not in oid:
-            continue
-
         seen_ips.add(ip)
         print(f"[*] Scanning interfaces for {ip}...")
         try:
@@ -141,7 +134,6 @@ async def main():
         except Exception as e:
             print(f"[!] Walk failed for {ip}: {e}")
 
-    # 실시간 모니터링 루프
     try:
         while True:
             scan_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -161,16 +153,13 @@ async def main():
                     continue
 
                 prev = previous_data.get(key, _SENTINEL)
-
                 if prev is _SENTINEL:
-                    # ── [BUG FIX #3] 첫 회: delta 없음을 None으로 명시 ──
-                    res['delta'] = None
+                    res['delta'] = None          # 첫 회: 기준값 없음
+                elif current_val >= prev:
+                    res['delta'] = current_val - prev
                 else:
-                    # Counter32 wrap-around 처리
-                    if current_val >= prev:
-                        res['delta'] = current_val - prev
-                    else:
-                        res['delta'] = (4_294_967_295 - prev) + current_val + 1
+                    # Counter32 wrap-around
+                    res['delta'] = (4_294_967_295 - prev) + current_val + 1
 
                 previous_data[key] = current_val
 
