@@ -160,7 +160,7 @@ class ZNetSatutGUI(QMainWindow):
         
         # [신규] 분석용 데이터 저장소
         self.history_data = {}
-        self.max_history = 50
+        self.max_history = 180
         self.current_selected_key = None
 
         self.worker = MonitorWorker()
