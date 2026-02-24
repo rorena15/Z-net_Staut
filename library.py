@@ -10,7 +10,7 @@ OID_LIBRARY = {
 
     # --- [Security Metrics] ---
     "1.3.6.1.2.1.6.9.0": {
-        "name": "TCP_Sessions", 
+        "name": "TCP Sessions", 
         "category": "Security",
         "alert_context": "TCP 세션 급증! DDoS 공격 또는 포트 스캐닝 징후입니다."
     },

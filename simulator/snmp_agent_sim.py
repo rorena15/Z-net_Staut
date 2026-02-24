@@ -48,12 +48,12 @@ class ChaosMibInstrum(instrum.MibInstrumController):
         new_vars = []
         for oid, val in var_binds:
             oid_str = str(oid)
-            # 인터페이스 이름(ifDescr) 요청 시 Index .1 정보 제공
-            if oid_str.startswith("1.3.6.1.2.1.2.2.1.2"):
-                next_oid = rfc1902.ObjectName(oid_str + ".1")
+            # 정확히 인터페이스 이름(ifDescr) 베이스 OID를 요청했을 때만 .1 응답
+            if oid_str == "1.3.6.1.2.1.2.2.1.2":
+                next_oid = rfc1902.ObjectName("1.3.6.1.2.1.2.2.1.2.1")
                 new_vars.append((next_oid, rfc1902.OctetString("Simulated-Eth0")))
             else:
-                # 더 이상의 OID가 없음을 알림
+                # 그 외의 경우(이미 .1을 얻은 후 다음 요청 등)에는 종료 알림
                 new_vars.append((oid, rfc1902.EndOfMibView()))
         return new_vars
 
