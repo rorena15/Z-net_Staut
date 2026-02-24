@@ -143,8 +143,8 @@ class ZNetSatutEngineAsync:
 
                 # 인덱스: OID 마지막 숫자
                 try:
-                    idx = int(str(varBind[0])[-1])
-                except ValueError:
+                    idx = int(resp_oid.split('.')[-1])
+                except (ValueError, IndexError):
                     idx = len(interfaces) + 1
 
                 interfaces.append({'index': idx, 'name': str(resp_val)})
