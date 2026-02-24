@@ -7,18 +7,49 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QTextEdit, QLabel, QSplitter, QMainWindow,QAbstractItemView
+    QTableWidgetItem, QHeaderView, QTextEdit, QLabel, QSplitter, QMainWindow,
+    QAbstractItemView, QComboBox, QStatusBar, QDialog, QFormLayout, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor,QFont
+from PySide6.QtGui import QColor, QFont
 
 from snmp_engine import ZNetSatutEngineAsync
 from db_manager import init_db, save_to_db
-from config import TARGETS, DB_NAME, SCAN_INTERVAL, THRESHOLD
+from config import TARGETS, DB_NAME, THRESHOLD
 from library import get_oid_info
 from styles import STYLESHEET
 
 _SENTINEL = object()
+
+class SettingsDialog(QDialog):
+    def __init__(self, current_interval, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("환경 설정")
+        self.setFixedSize(300, 150)
+        self.setStyleSheet(STYLESHEET)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(self.styleSheet() + "QDialog { background-color: #1e1e1e; }")
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+        
+        self.interval_combo = QComboBox()
+        self.interval_combo.addItems(["10 Seconds", "30 Seconds", "60 Seconds"])
+        
+        idx = 0
+        if current_interval == 30: idx = 1
+        elif current_interval == 60: idx = 2
+        self.interval_combo.setCurrentIndex(idx)
+        
+        form_layout.addRow("Polling Interval:", self.interval_combo)
+        layout.addLayout(form_layout)
+        
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def get_interval(self):
+        return int(self.interval_combo.currentText().split()[0])
 
 class MonitorWorker(QThread):
     update_data = Signal(list, str)
@@ -28,6 +59,7 @@ class MonitorWorker(QThread):
         super().__init__()
         self.is_running = False
         self._loop = None
+        self.scan_interval = 10 
 
     def run(self):
         self.is_running = True
@@ -40,12 +72,15 @@ class MonitorWorker(QThread):
     def stop(self):
         self.is_running = False
     
+    def set_interval(self, interval):
+        self.scan_interval = interval
+
     async def _monitor_loop(self):
         engine = ZNetSatutEngineAsync()
         db_conn = init_db(DB_NAME)
         previous_data = {}
 
-        self.log_msg.emit("[*] Z-Net_Satut 엔진 초기화 및 인터페이스 탐색 중...")
+        self.log_msg.emit("[*] Z-Net_Satut 엔진 초기화 중...")
         dynamic_targets = list(TARGETS)
         seen_ips = set()
 
@@ -95,7 +130,7 @@ class MonitorWorker(QThread):
             save_to_db(db_conn, results)
             self.update_data.emit(results, scan_time)
 
-            for _ in range(SCAN_INTERVAL * 10):
+            for _ in range(self.scan_interval * 10):
                 if not self.is_running: break
                 await asyncio.sleep(0.1)
 
@@ -105,7 +140,7 @@ class MonitorWorker(QThread):
 class ZNetSatutGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Z-Net_Satut SecOps Monitor")
+        self.setWindowTitle("Z-VulnScan SecOps Monitor")
         self.resize(1300, 800)
         self.setStyleSheet(STYLESHEET)
         
@@ -120,33 +155,35 @@ class ZNetSatutGUI(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        control_layout = QHBoxLayout()
-        self.status_label = QLabel("상태: 대기 중")
-        self.status_label.setStyleSheet("color: #aaaaaa; font-weight: bold;")
-        
+        top_layout = QHBoxLayout()
         self.start_btn = QPushButton("▶ 모니터링 시작")
         self.start_btn.clicked.connect(self.start_monitoring)
         
-        self.stop_btn = QPushButton("■ 모니터링 중지")
+        self.stop_btn = QPushButton("■ 중지")
         self.stop_btn.clicked.connect(self.stop_monitoring)
         self.stop_btn.setEnabled(False)
 
-        control_layout.addWidget(self.status_label)
-        control_layout.addStretch()
-        control_layout.addWidget(self.start_btn)
-        control_layout.addWidget(self.stop_btn)
-        main_layout.addLayout(control_layout)
+        self.settings_btn = QPushButton("⚙️ 설정")
+        self.settings_btn.clicked.connect(self.open_settings)
+
+        top_layout.addWidget(self.start_btn)
+        top_layout.addWidget(self.stop_btn)
+        top_layout.addStretch()
+        top_layout.addWidget(self.settings_btn)
+        
+        main_layout.addLayout(top_layout)
 
         splitter = QSplitter(Qt.Vertical)
 
         self.table = QTableWidget(0, 7)
-        self.table.verticalHeader().setVisible(False)                 # 행 번호 숨기기
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)  # 더블클릭 수정 방지
-        self.table.setSelectionMode(QAbstractItemView.NoSelection)    # 클릭 및 드래그 선택 방지
-        self.table.setFocusPolicy(Qt.NoFocus)                         # 클릭 시 점선 테두리 생기는 현상 방지
         self.table.setHorizontalHeaderLabels([
             "Target IP", "Metric Name", "Category", "Value", "Delta", "Status", "Security Intelligence"
         ])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table.setFocusPolicy(Qt.NoFocus)
+
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
@@ -163,16 +200,34 @@ class ZNetSatutGUI(QMainWindow):
 
         splitter.addWidget(self.table)
         splitter.addWidget(self.log_console)
-        splitter.setSizes([500, 200])
+        splitter.setSizes([550, 150])
         main_layout.addWidget(splitter)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("상태: 대기 중")
+        self.status_bar.setStyleSheet("color: #aaaaaa; font-weight: bold;")
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.worker.scan_interval, self)
+        if dialog.exec():
+            new_interval = dialog.get_interval()
+            self.worker.set_interval(new_interval)
+            
+            # 다음 스캔 시점부터 적용된다고 로그와 상태바에 명시
+            self.append_log(f"[*] 환경설정: Polling Interval이 {new_interval}초로 변경되었습니다. (다음 스캔부터 적용)")
+            if self.worker.isRunning():
+                self.status_bar.showMessage(f"상태: 모니터링 동작 중 (LIVE) | 주기: {new_interval}초 (적용 대기 중...)")
 
     def start_monitoring(self):
         if not self.worker.isRunning():
             self.table.setRowCount(0)
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
-            self.status_label.setText("상태: 모니터링 동작 중 (LIVE)")
-            self.status_label.setStyleSheet("color: #50fa7b; font-weight: bold;")
+            # 설정 버튼은 모니터링 중에도 활성화 상태 유지
+            
+            self.status_bar.showMessage(f"상태: 모니터링 동작 중 (LIVE) | 주기: {self.worker.scan_interval}초")
+            self.status_bar.setStyleSheet("color: #50fa7b; font-weight: bold;")
             self.worker.start()
 
     def stop_monitoring(self):
@@ -180,8 +235,8 @@ class ZNetSatutGUI(QMainWindow):
             self.worker.stop()
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
-            self.status_label.setText("상태: 모니터링 중지됨")
-            self.status_label.setStyleSheet("color: #ff5555; font-weight: bold;")
+            self.status_bar.showMessage("상태: 모니터링 중지됨")
+            self.status_bar.setStyleSheet("color: #ff5555; font-weight: bold;")
 
     def append_log(self, msg):
         time_str = datetime.now().strftime('%H:%M:%S')
@@ -189,7 +244,8 @@ class ZNetSatutGUI(QMainWindow):
 
     def update_table(self, results, scan_time):
         self.table.setRowCount(0)
-        self.status_label.setText(f"상태: 모니터링 동작 중 (LIVE) | 최근 스캔: {scan_time}")
+        # 스캔이 완료되어 테이블이 업데이트될 때 "적용 대기 중" 메시지가 자연스럽게 사라짐
+        self.status_bar.showMessage(f"상태: 모니터링 동작 중 (LIVE) | 주기: {self.worker.scan_interval}초 | 최근 스캔: {scan_time}")
 
         for row, res in enumerate(results):
             self.table.insertRow(row)
@@ -201,7 +257,6 @@ class ZNetSatutGUI(QMainWindow):
 
             is_online = (res.get('status') == 'Success')
 
-            # 1. 각 셀 아이템 기본 생성
             ip_item = QTableWidgetItem(res['ip'])
             name_item = QTableWidgetItem(info['name'])
             cat_item = QTableWidgetItem(info['category'])
@@ -212,20 +267,16 @@ class ZNetSatutGUI(QMainWindow):
 
             status_item = QTableWidgetItem()
             status_item.setTextAlignment(Qt.AlignCenter)
-            
-            # Status 폰트를 굵게(Bold) 설정하여 시인성 강화
             font = QFont()
             font.setBold(True)
             status_item.setFont(font)
 
             intel_item = QTableWidgetItem()
 
-            # 2. ONLINE / OFFLINE 에 따른 시각적 차별화
             if is_online:
                 status_item.setText("ONLINE")
-                status_item.setForeground(QColor("#50fa7b")) # 눈에 띄는 밝은 녹색
+                status_item.setForeground(QColor("#50fa7b"))
                 
-                # 인텔리전스 로직 (온라인일 때만 정상 분석)
                 if isinstance(delta, int):
                     if info['name'].startswith("SysUpTime") and delta < 0:
                         intel_item.setText(f"[ALERT] {info.get('alert_context', '장비 상태 변화 감지')}")
@@ -246,9 +297,8 @@ class ZNetSatutGUI(QMainWindow):
                     intel_item.setForeground(QColor("#888888"))
             else:
                 status_item.setText("OFFLINE")
-                status_item.setForeground(QColor("#ff5555")) # 경고성 빨간색
+                status_item.setForeground(QColor("#ff5555"))
                 
-                # [핵심] 오프라인일 경우 해당 행의 나머지 글씨를 모두 어두운 회색으로 변경
                 dim_color = QColor("#666666")
                 ip_item.setForeground(dim_color)
                 name_item.setForeground(dim_color)
@@ -259,7 +309,6 @@ class ZNetSatutGUI(QMainWindow):
                 intel_item.setText("[N/A]")
                 intel_item.setForeground(dim_color)
 
-            # 3. 테이블에 아이템 배치
             self.table.setItem(row, 0, ip_item)
             self.table.setItem(row, 1, name_item)
             self.table.setItem(row, 2, cat_item)
