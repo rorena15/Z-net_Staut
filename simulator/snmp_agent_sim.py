@@ -31,29 +31,32 @@ start_time = time.time()
 
 # 4. 요청 처리 핸들러 (Get 및 Next/Walk 모두 대응)
 class ChaosMibInstrum(instrum.MibInstrumController):
-    # [Get 요청 처리] - 실시간 스캔 대응
     def read_vars(self, var_binds, ac_info=(None, None)):
         new_vars = []
         for oid, val in var_binds:
-            sim_val = get_simulated_value(str(oid), start_time)
-            # 트래픽 데이터는 Counter32, 나머지는 Integer 응답
-            if "1.3.6.1.2.1.2.2.1" in str(oid):
+            oid_str = str(oid)
+            sim_val = get_simulated_value(oid_str, start_time)
+            # [로그 추가] 요청이 오면 무조건 찍힙니다.
+            print(f"[*] GET Request: {oid_str} -> Response: {sim_val}")
+            
+            from pysnmp.proto import rfc1902
+            if "1.3.6.1.2.1.2.2.1" in oid_str:
                 new_vars.append((oid, rfc1902.Counter32(int(sim_val))))
             else:
                 new_vars.append((oid, rfc1902.Integer(int(sim_val))))
         return new_vars
 
-    # [Next/Walk 요청 처리] - main.py의 walk_interfaces 탐색 대응 (핵심 추가)
     def read_next_vars(self, var_binds, ac_info=(None, None)):
         new_vars = []
         for oid, val in var_binds:
             oid_str = str(oid)
-            # 정확히 인터페이스 OID를 요청했을 때만 다음 인덱스(.1)를 반환
+            # [버그 수정] 정확히 인터페이스 베이스 OID일 때만 딱 한 번 .1 응답
             if oid_str == "1.3.6.1.2.1.2.2.1.2":
                 next_oid = rfc1902.ObjectName("1.3.6.1.2.1.2.2.1.2.1")
                 new_vars.append((next_oid, rfc1902.OctetString("Simulated-Eth0")))
+                print(f"[*] WALK Request: {oid_str} -> Found Simulated-Eth0")
             else:
-                # 그 외에는 더 이상 데이터가 없음을 알림 (중요!)
+                # 그 외에는 종료를 알림 (이게 없으면 main.py가 무한 루프에 빠짐)
                 new_vars.append((oid, rfc1902.EndOfMibView()))
         return new_vars
 
