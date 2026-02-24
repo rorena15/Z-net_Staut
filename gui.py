@@ -1,12 +1,16 @@
+import sys
 import asyncio
+import warnings
 from datetime import datetime
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QTextEdit, QLabel, QSplitter, QMainWindow
+    QTableWidgetItem, QHeaderView, QTextEdit, QLabel, QSplitter, QMainWindow,QAbstractItemView
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor,QFont
 
 from snmp_engine import ZNetSatutEngineAsync
 from db_manager import init_db, save_to_db
@@ -27,6 +31,8 @@ class MonitorWorker(QThread):
 
     def run(self):
         self.is_running = True
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._loop.run_until_complete(self._monitor_loop())
@@ -134,6 +140,10 @@ class ZNetSatutGUI(QMainWindow):
         splitter = QSplitter(Qt.Vertical)
 
         self.table = QTableWidget(0, 7)
+        self.table.verticalHeader().setVisible(False)                 # 행 번호 숨기기
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)  # 더블클릭 수정 방지
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)    # 클릭 및 드래그 선택 방지
+        self.table.setFocusPolicy(Qt.NoFocus)                         # 클릭 시 점선 테두리 생기는 현상 방지
         self.table.setHorizontalHeaderLabels([
             "Target IP", "Metric Name", "Category", "Value", "Delta", "Status", "Security Intelligence"
         ])
@@ -189,42 +199,71 @@ class ZNetSatutGUI(QMainWindow):
             val_str = str(res['value']) if res['value'] is not None else '-'
             delta_str = '-' if (delta is None or delta == '-') else str(delta)
 
-            status_item = QTableWidgetItem()
-            status_item.setTextAlignment(Qt.AlignCenter)
-            if res.get('status') == 'Success':
-                status_item.setText("ONLINE")
-                status_item.setForeground(QColor("#50fa7b"))
-            else:
-                status_item.setText("OFFLINE")
-                status_item.setForeground(QColor("#ff5555"))
+            is_online = (res.get('status') == 'Success')
 
-            intel_item = QTableWidgetItem()
-            if isinstance(delta, int):
-                if info['name'].startswith("SysUpTime") and delta < 0:
-                    intel_item.setText(f"[ALERT] {info.get('alert_context', '장비 상태 변화 감지')}")
-                    intel_item.setForeground(QColor("#ffb86c"))
-                else:
-                    is_critical = False
-                    for key, limit in THRESHOLD.items():
-                        if key in info['name'] and delta >= limit:
-                            is_critical = True
-                            intel_item.setText(f"[CRITICAL] {info.get('alert_context', '이상 징후 발생')}")
-                            intel_item.setForeground(QColor("#ff5555"))
-                            break
-                    if not is_critical:
-                        intel_item.setText("[NORMAL]")
-                        intel_item.setForeground(QColor("#50fa7b"))
-            else:
-                intel_item.setText("[N/A]")
-                intel_item.setForeground(QColor("#888888"))
-
-            self.table.setItem(row, 0, QTableWidgetItem(res['ip']))
-            self.table.setItem(row, 1, QTableWidgetItem(info['name']))
-            self.table.setItem(row, 2, QTableWidgetItem(info['category']))
-            self.table.setItem(row, 3, QTableWidgetItem(val_str))
+            # 1. 각 셀 아이템 기본 생성
+            ip_item = QTableWidgetItem(res['ip'])
+            name_item = QTableWidgetItem(info['name'])
+            cat_item = QTableWidgetItem(info['category'])
+            val_item = QTableWidgetItem(val_str)
             
             delta_item = QTableWidgetItem(delta_str)
             delta_item.setTextAlignment(Qt.AlignCenter)
+
+            status_item = QTableWidgetItem()
+            status_item.setTextAlignment(Qt.AlignCenter)
+            
+            # Status 폰트를 굵게(Bold) 설정하여 시인성 강화
+            font = QFont()
+            font.setBold(True)
+            status_item.setFont(font)
+
+            intel_item = QTableWidgetItem()
+
+            # 2. ONLINE / OFFLINE 에 따른 시각적 차별화
+            if is_online:
+                status_item.setText("ONLINE")
+                status_item.setForeground(QColor("#50fa7b")) # 눈에 띄는 밝은 녹색
+                
+                # 인텔리전스 로직 (온라인일 때만 정상 분석)
+                if isinstance(delta, int):
+                    if info['name'].startswith("SysUpTime") and delta < 0:
+                        intel_item.setText(f"[ALERT] {info.get('alert_context', '장비 상태 변화 감지')}")
+                        intel_item.setForeground(QColor("#ffb86c"))
+                    else:
+                        is_critical = False
+                        for key, limit in THRESHOLD.items():
+                            if key in info['name'] and delta >= limit:
+                                is_critical = True
+                                intel_item.setText(f"[CRITICAL] {info.get('alert_context', '이상 징후 발생')}")
+                                intel_item.setForeground(QColor("#ff5555"))
+                                break
+                        if not is_critical:
+                            intel_item.setText("[NORMAL]")
+                            intel_item.setForeground(QColor("#50fa7b"))
+                else:
+                    intel_item.setText("[N/A]")
+                    intel_item.setForeground(QColor("#888888"))
+            else:
+                status_item.setText("OFFLINE")
+                status_item.setForeground(QColor("#ff5555")) # 경고성 빨간색
+                
+                # [핵심] 오프라인일 경우 해당 행의 나머지 글씨를 모두 어두운 회색으로 변경
+                dim_color = QColor("#666666")
+                ip_item.setForeground(dim_color)
+                name_item.setForeground(dim_color)
+                cat_item.setForeground(dim_color)
+                val_item.setForeground(dim_color)
+                delta_item.setForeground(dim_color)
+                
+                intel_item.setText("[N/A]")
+                intel_item.setForeground(dim_color)
+
+            # 3. 테이블에 아이템 배치
+            self.table.setItem(row, 0, ip_item)
+            self.table.setItem(row, 1, name_item)
+            self.table.setItem(row, 2, cat_item)
+            self.table.setItem(row, 3, val_item)
             self.table.setItem(row, 4, delta_item)
             self.table.setItem(row, 5, status_item)
             self.table.setItem(row, 6, intel_item)

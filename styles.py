@@ -1,10 +1,3 @@
-# --------------------------------------------------------------------------
-# Copyright © 2025 Z-VulnScan Team. All Rights Reserved.
-# 
-# This software is proprietary and confidential. 
-# Unauthorized copying, modification, distribution, or reverse engineering 
-# of this file, via any medium, is strictly prohibited.
-# --------------------------------------------------------------------------
 STYLESHEET = """
 /* [공통] 윈도우 및 폰트 */
 QMainWindow { background-color: #1e1e1e; }
@@ -77,6 +70,7 @@ QGroupBox::title { subcontrol-origin: margin; left: 15px; padding: 0 5px; }
 /* [테이블] 결과 목록 */
 QTableWidget { 
     background-color: #1e1e1e; 
+    color: #ddd; 
     gridline-color: #333; 
     border: 1px solid #444; 
     border-radius: 4px; 
@@ -90,7 +84,7 @@ QHeaderView::section {
     border-bottom: 1px solid #444; 
     font-weight: bold; 
 }
-QTableWidget::item { padding: 5px; color: #ddd; }
+QTableWidget::item { padding: 5px; }
 QTableWidget::item:selected { 
     background-color: #37373d; 
     color: white; 
