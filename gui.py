@@ -102,7 +102,8 @@ class MonitorWorker(QThread):
         engine = ZNetSatutEngineAsync()
         db_conn = init_db(DB_NAME)
         previous_data = {}
-
+        high_risk_ips = []  # 위험 IP 목록
+        
         self.log_msg.emit("[*] Z-Net_Satut 엔진 초기화 중...")
         dynamic_targets = list(TARGETS)
         seen_ips = set()
@@ -128,6 +129,15 @@ class MonitorWorker(QThread):
 
         while self.is_running:
             scan_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            results = await engine.run_scan(dynamic_targets)
+            
+            try:
+                resp = requests.get("http://127.0.0.1:8090/api/v1/vulnerable_ips", timeout=2)
+                if resp.status_code == 200:
+                    high_risk_ips = resp.json().get("vulnerable_ips", [])
+            except:
+                pass
+
             results = await engine.run_scan(dynamic_targets)
 
             for res in results:
@@ -159,6 +169,17 @@ class MonitorWorker(QThread):
                     previous_data[key] = curr_val
                 except (ValueError, TypeError):
                     res['delta'] = '-'
+                    
+                if isinstance(res.get('delta'), int):
+                    # 기본 임계치 가져오기
+                    base_threshold = THRESHOLD["TCP Sessions"] if "1.6.9.0" in res['oid'] else THRESHOLD["In_Traffic"]
+                    
+                    # 해당 IP가 취약점 리스트에 있다면 임계치를 50%로 대폭 낮춤(예민하게 반응)
+                    if res['ip'] in high_risk_ips:
+                        target_threshold = base_threshold * 0.5
+                        res['status'] = 'HIGH RISK' # 테이블 구분을 위해 상태 변경
+                    else:
+                        target_threshold = base_threshold
 
             save_to_db(db_conn, results)
             self.update_data.emit(results, scan_time)
@@ -348,10 +369,7 @@ class ZNetSatutGUI(QMainWindow):
         self.status_bar.showMessage(f"상태: LIVE | 주기: {self.worker.scan_interval}s | 최근 스캔: {scan_time}")
         
         results.sort(key=lambda x: (
-            # IP 주소(127.0.0.1)는 127.000.000.001 형태로 변환하여 숫자 순서 유지
-            # 도메인 주소(demo.pysnmp.com)는 문자열 그대로 사용하여 비교 가능하게 함
             ".".join(p.zfill(3) for p in x['ip'].split('.')) if all(p.isdigit() for p in x['ip'].split('.') if p) else x['ip'],
-            # 2순위: 메트릭 이름 기준 정렬
             get_oid_info(x['oid'])['name']
         ))
         current_ts = time.time()
@@ -361,49 +379,50 @@ class ZNetSatutGUI(QMainWindow):
             delta = res.get('delta')
             key = f"{res['ip']}_{info['name']}"
 
-            # [수정] 메트릭 성격에 따라 그래프용 데이터 선택
-            # Traffic 카테고리는 변화량(delta)을, 그 외(Security 등)는 현재 값(res['value'])을 사용
             try:
                 graph_val = int(res['value']) if info['category'] == "Security" else delta
             except (ValueError, TypeError):
                 graph_val = None
 
-            # 히스토리 데이터 축적
             if isinstance(graph_val, int):
                 if key not in self.history_data: self.history_data[key] = []
                 self.history_data[key].append((current_ts, graph_val))
                 if len(self.history_data[key]) > self.max_history: 
                     self.history_data[key].pop(0)
 
-            # [보안 분석 로직] 안내 메시지 형식 통일
             intel_text, intel_color = "[NORMAL]", QColor("#50fa7b")
+            
+            # [수정] 위험 IP 여부 확인
+            is_high_risk = (res.get('status') == 'HIGH RISK')
             
             if isinstance(delta, int):
                 is_alert = False
-                alert_msg = info.get('alert_context', '이상 징후 탐지') # library.py의 메세지 활용
+                alert_msg = info.get('alert_context', '이상 징후 탐지') 
                 
-                # [1] 절대 임계치 체크 (config.py 기준)
-                for th_key, limit in THRESHOLD.items():
-                    if th_key.lower() in info['name'].lower() and delta >= limit:
-                        intel_text = f"[CRITICAL] {alert_msg}" # 메시지 형식 통일
-                        # [추가] 미들웨어로 비동기 알람 전송
-                        alert_msg = f"{info['name']} 급증 탐지"
-                        threading.Thread(
-                            target=self.send_alert_to_middleware, 
-                            args=(res['ip'], info['name'], delta, alert_msg),
-                            daemon=True
-                        ).start()
-                        intel_color = QColor("#ff5555")
-                        is_alert = True
-                        break
+                # [1] 절대 임계치 체크
+                for th_key, base_limit in THRESHOLD.items():
+                    if th_key.lower() in info['name'].lower():
+                        # [핵심] 위험 IP는 임계치를 절반으로 적용
+                        limit = (base_limit * 0.5) if is_high_risk else base_limit
+                        
+                        if delta >= limit:
+                            intel_text = f"[CRITICAL] {alert_msg} (High Risk 집중감시)" if is_high_risk else f"[CRITICAL] {alert_msg}"
+                            
+                            alert_msg_send = f"{info['name']} 급증 탐지"
+                            threading.Thread(
+                                target=self.send_alert_to_middleware, 
+                                args=(res['ip'], info['name'], delta, alert_msg_send),
+                                daemon=True
+                            ).start()
+                            intel_color = QColor("#ff5555")
+                            is_alert = True
+                            break
                 
-                # [2] 동적 스파이크 체크 (평균 대비 5배)
+                # [2] 동적 스파이크 체크
                 if not is_alert and len(self.history_data.get(key, [])) >= 5:
-                    # [수정] 튜플 리스트에서 값(delta)만 추출하여 평균 계산
                     history_values = [pt[1] for pt in self.history_data[key][:-1]]
                     avg_val = np.mean(history_values)
                     
-                    # Delta가 4GB 근처라면 시뮬레이션 노이즈에 의한 역전 현상으로 간주하여 무시
                     if delta > 4000000000: 
                         intel_text = "[LEARNING]" 
                         intel_color = QColor("#888888")
@@ -415,8 +434,8 @@ class ZNetSatutGUI(QMainWindow):
                 intel_text = "[N/A]"
                 intel_color = QColor("#888888")
 
-            # 가독성 높은 단위 변환 출력 적용
-            is_online = (res.get('status') == 'Success')
+            # [수정] HIGH RISK 상태도 ONLINE으로 취급하여 표시
+            is_online = (res.get('status') in ['Success', 'HIGH RISK'])
             val_display = self.format_value(res['value'], info['category']) if is_online else "-"
             delta_display = self.format_value(delta, info['category']) if isinstance(delta, int) else "-"
 
@@ -430,13 +449,11 @@ class ZNetSatutGUI(QMainWindow):
                 QTableWidgetItem(intel_text)
             ]
 
-            # 스타일: ONLINE/OFFLINE 강조 및 알림 색상 적용
             font = QFont(); font.setBold(True)
             row_items[5].setFont(font)
             row_items[5].setForeground(QColor("#50fa7b") if is_online else QColor("#ff5555"))
             row_items[6].setForeground(intel_color)
 
-            # 오프라인 시 행 전체 어둡게 처리
             if not is_online:
                 for i in range(5): row_items[i].setForeground(QColor("#666666"))
 
