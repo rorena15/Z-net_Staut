@@ -4,16 +4,22 @@ QMainWindow { background-color: #1e1e1e; }
 QWidget { color: #d4d4d4; font-size: 10pt; font-family: 'Segoe UI', sans-serif; }
 QToolTip { color: #ffffff; background-color: #2b2b2b; border: 1px solid #767676; }
 
-/* [입력창] QLineEdit */
-QLineEdit {
+/* [입력창] QLineEdit, QSpinBox */
+QLineEdit, QSpinBox {
     background-color: #2d2d30;
     color: #ffffff;
     border: 1px solid #3e3e42;
     border-radius: 4px;
     padding: 6px;
 }
-QLineEdit:focus { border: 1px solid #555555; background-color: #1e1e1e; }
-QLineEdit:disabled { background-color: #333333; color: #888888; }
+QLineEdit:focus, QSpinBox:focus { 
+    border: 1px solid #555555; 
+    background-color: #1e1e1e; 
+}
+QLineEdit:disabled, QSpinBox:disabled { 
+    background-color: #333333; 
+    color: #888888; 
+}
 
 /* [콤보박스] QComboBox */
 QComboBox {
@@ -142,4 +148,35 @@ QProgressBar {
     color: white;
 } 
 QProgressBar::chunk { background: #888; }
+
+/* [QSpinBox 버튼 영역] */
+QSpinBox::up-button, QSpinBox::down-button {
+    background-color: #3e3e42;
+    border: 1px solid #2d2d30;
+    width: 16px;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: #505050;
+}
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
+    background-color: #007acc;
+}
+
+/* [QSpinBox 가장 확실한 CSS 화살표] */
+QSpinBox::up-arrow {
+    width: 0px;
+    height: 0px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 5px solid #cccccc;
+}
+QSpinBox::down-arrow {
+    width: 0px;
+    height: 0px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid #cccccc;
+}
+QSpinBox::up-arrow:hover { border-bottom: 5px solid #ffffff; }
+QSpinBox::down-arrow:hover { border-top: 5px solid #ffffff; }
 """

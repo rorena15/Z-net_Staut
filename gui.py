@@ -11,7 +11,8 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, 
     QTableWidgetItem, QHeaderView, QTextEdit, QLabel, QSplitter, QMainWindow,
-    QAbstractItemView, QComboBox, QStatusBar, QDialog, QFormLayout, QDialogButtonBox
+    QAbstractItemView, QComboBox, QStatusBar, QDialog, QFormLayout, QDialogButtonBox,
+    QSpinBox
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
@@ -21,6 +22,7 @@ from db_manager import init_db, save_to_db
 from config import TARGETS, DB_NAME, THRESHOLD
 from library import get_oid_info
 from styles import STYLESHEET
+import config
 
 _SENTINEL = object()
 
@@ -28,7 +30,7 @@ class SettingsDialog(QDialog):
     def __init__(self, current_interval, parent=None):
         super().__init__(parent)
         self.setWindowTitle("환경 설정")
-        self.setFixedSize(300, 150)
+        self.setFixedSize(300, 220) 
         self.setStyleSheet(STYLESHEET)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(self.styleSheet() + "QDialog { background-color: #1e1e1e; }")
@@ -38,22 +40,37 @@ class SettingsDialog(QDialog):
         
         self.interval_combo = QComboBox()
         self.interval_combo.addItems(["10 Seconds", "30 Seconds", "60 Seconds"])
-        
         idx = 0
         if current_interval == 30: idx = 1
         elif current_interval == 60: idx = 2
         self.interval_combo.setCurrentIndex(idx)
-        
         form_layout.addRow("Polling Interval:", self.interval_combo)
+        
+        self.tcp_spin = QSpinBox()
+        self.tcp_spin.setRange(10, 100000)
+        self.tcp_spin.setValue(THRESHOLD.get("TCP Sessions", 1000))
+        form_layout.addRow("TCP Session 임계치:", self.tcp_spin)
+        
+        self.traffic_spin = QSpinBox()
+        self.traffic_spin.setRange(1, 10000)
+        self.traffic_spin.setSuffix(" MB")
+        current_traffic_mb = THRESHOLD.get("In_Traffic", 524288000) // 1048576
+        self.traffic_spin.setValue(current_traffic_mb)
+        form_layout.addRow("Traffic 임계치 (10s):", self.traffic_spin)
+
         layout.addLayout(form_layout)
         
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
-
-    def get_interval(self):
-        return int(self.interval_combo.currentText().split()[0])
+        
+    def get_settings(self):
+        return {
+            "interval": int(self.interval_combo.currentText().split()[0]),
+            "tcp_threshold": self.tcp_spin.value(),
+            "traffic_threshold": self.traffic_spin.value() * 1048576
+        }
 
 class MonitorWorker(QThread):
     update_data = Signal(list, str)
@@ -261,9 +278,17 @@ class ZNetSatutGUI(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self.worker.scan_interval, self)
         if dialog.exec():
-            new_interval = dialog.get_interval()
+            settings = dialog.get_settings()
+            
+            new_interval = settings["interval"]
             self.worker.set_interval(new_interval)
-            self.append_log(f"[*] 환경설정: 주기 {new_interval}초 변경 (다음 스캔부터 적용)")
+            
+            THRESHOLD["TCP Sessions"] = settings["tcp_threshold"]
+            THRESHOLD["In_Traffic"] = settings["traffic_threshold"]
+            THRESHOLD["Out_Traffic"] = settings["traffic_threshold"]
+            
+            log_msg = f"[*] 환경설정 변경: 주기 {new_interval}초 / TCP {settings['tcp_threshold']} / 트래픽 {settings['traffic_threshold'] // 1048576}MB"
+            self.append_log(log_msg)
 
     def start_monitoring(self):
         if not self.worker.isRunning():
