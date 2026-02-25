@@ -5,6 +5,8 @@ import time
 import numpy as np
 import pyqtgraph as pg
 from datetime import datetime
+import requests
+import threading
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -327,6 +329,20 @@ class ZNetSatutGUI(QMainWindow):
     def append_log(self, msg):
         self.log_console.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
+    def send_alert_to_middleware(self, ip, alert_type, value, msg):
+        url = "http://127.0.0.1:8090/api/v1/alert"
+        payload = {
+            "source": "Z-Net_Satut",
+            "target_ip": ip,
+            "alert_type": alert_type,
+            "value": str(value),
+            "message": msg
+    }
+        try:
+            requests.post(url, json=payload, timeout=3)
+        except Exception as e:
+            print(f"Middleware connection error: {e}")
+
     def update_table(self, results, scan_time):
         self.table.setRowCount(0)
         self.status_bar.showMessage(f"상태: LIVE | 주기: {self.worker.scan_interval}s | 최근 스캔: {scan_time}")
@@ -370,6 +386,13 @@ class ZNetSatutGUI(QMainWindow):
                 for th_key, limit in THRESHOLD.items():
                     if th_key.lower() in info['name'].lower() and delta >= limit:
                         intel_text = f"[CRITICAL] {alert_msg}" # 메시지 형식 통일
+                        # [추가] 미들웨어로 비동기 알람 전송
+                        alert_msg = f"{info['name']} 급증 탐지"
+                        threading.Thread(
+                            target=self.send_alert_to_middleware, 
+                            args=(res['ip'], info['name'], delta, alert_msg),
+                            daemon=True
+                        ).start()
                         intel_color = QColor("#ff5555")
                         is_alert = True
                         break
@@ -438,3 +461,5 @@ class ZNetSatutGUI(QMainWindow):
         
         # 2. 일반 세션/카운트 데이터 (천 단위 콤마)
         return f"{int(value):,}"
+    
+    
